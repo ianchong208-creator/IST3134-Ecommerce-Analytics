@@ -100,6 +100,30 @@ Roughly **1 in 70 views** (916,939 / 63,556,110) ends in a purchase — a useful
 | acer | $3,347,306.53 | 6,402 |
 | lenovo | $2,698,106.30 | 6,547 |
 
+### 4. Performance Characteristics (Solution 1: PySpark on EMR)
+
+Measured by re-running the identical job (same cluster shape, same executor config, same input file) with the driver log captured and bookended with UTC timestamps.
+
+**Execution time** — 159 s (2 min 39 s) end to end:
+
+| Stage | Duration |
+|---|---:|
+| Total job (start to finish) | 159 s (2 min 39 s) |
+| Spark/YARN startup + initial read, parse, and cache | ≈ 130.5 s (one-time) |
+| Event Distribution | 10.7 s |
+| Daily Purchase and Revenue Analysis | 9.9 s |
+| Top 10 Brands by Estimated Revenue | 7.9 s |
+
+The three aggregations together take only 28.5 of the 159 seconds — the remaining ~130 s is the one-time cost of starting the Spark application and reading, parsing, and caching the full 67,501,979-row file. Every aggregation after the first is cheap specifically because it reuses that cached DataFrame instead of repeating the read.
+
+**Scalability** — horizontal by design: 1 primary + 2 core `m5.xlarge` nodes, with YARN auto-partitioning the cached DataFrame and all three stages across 4 executors (`--num-executors 4 --executor-memory 3g --executor-cores 2`). Adding capacity is a config change, not a code change.
+
+**Memory limitations** — measured via the aggregated driver+executor logs (`yarn logs -applicationId ...`): cached DataFrame partitions landed in executor memory at ~42–55 MiB each, with free memory decreasing smoothly as partitions accumulated and no spill-to-disk, eviction, or "not enough memory" warnings anywhere in the log. The full 9 GB file fit comfortably in the two core nodes' combined memory. (Spark's default `MEMORY_AND_DISK` storage level for cached DataFrames would spill to local disk automatically if it didn't fit, rather than failing.)
+
+**Ability to handle increasing data volume** — additive, not architectural: pointing the same job at both months combined (`s3://<bucket>/ecommerce/2019-*.csv`, ~14.6 GB) needs no code change, just enough core nodes to hold throughput steady. Not empirically tested this round (single data volume only).
+
+Solution 2 (pandas, single-machine) will be measured against the same four dimensions once complete, for a direct comparison.
+
 ## Notable Findings
 
 - **Samsung outsells Apple on volume, Apple wins on revenue.** Samsung had 20% more purchases than Apple (200,027 vs. 166,064) but Apple generated more than double the revenue ($127.5M vs. $54.9M) — average selling price, not unit volume, is the dominant factor here, and it's the kind of pattern a single `groupBy`/`agg` on Spark surfaces immediately at this scale.
