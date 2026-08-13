@@ -111,7 +111,7 @@ Amazon EMR 7.13.0 (Hadoop 3.4.2, Spark 3.5.6) · PySpark DataFrame API · Amazon
 
 ## Authors
 
-- Ian Chong Yi Ren (22092902)
-- [Teammate name here]
+- Ian Chong Yi Ren
+- Tan Yan Bin
 
 Course: IST3134 — Big Data Analytics in the Cloud, Sunway University, May Semester 2026.
