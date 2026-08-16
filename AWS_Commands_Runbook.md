@@ -11,7 +11,10 @@ yourself in your own Learner Lab session; I don't have access to your AWS accoun
 - Cluster spec (matches Lab 5/6): 1 primary + 2 core nodes, `m5.xlarge`, EMR release
   `emr-7.x`, applications Hadoop + Spark. Est. cost ≈ $1.50–2.50/hr of Learner Lab credit.
 - Script: `ecommerce_analysis.py` (sent alongside this file) runs all three analyses —
-  Event Distribution, Daily Purchase & Revenue, Top 10 Brands by Revenue.
+  Event Distribution, Daily Purchase & Revenue, Top 10 Brands by Revenue — against the
+  full file. `spark_scalability_benchmark.py` (also sent alongside) re-runs the same
+  three analyses at four increasing sample sizes for the scalability numbers in the
+  report (Step 4b below, optional but needed for the Table 4.5 / README scalability data).
 
 **Where to run each block:** upload commands run **locally on Windows** (that's where the
 file is). Everything else runs in **AWS CloudShell** (already authenticated inside your
@@ -193,6 +196,38 @@ stages waiting on resources, scale down; if nodes are idle, scale up.
 
 ---
 
+## Step 4b — Run the scalability benchmark (optional, same SSH session)
+
+Same idea as Step 4, but re-runs the same three analyses at four increasing sample sizes
+(100K / 500K / 1M / 5M rows) instead of the full file — this is what produces the
+scalability table in the report and README. Still on the primary node, same
+`~/workspace/assignment` directory:
+
+```bash
+cat > spark_scalability_benchmark.py << 'PYEOF'
+# --- paste the full contents of the spark_scalability_benchmark.py file sent alongside this runbook ---
+PYEOF
+```
+
+Run it:
+
+```bash
+time spark-submit --master yarn --deploy-mode client \
+  --num-executors 4 --executor-memory 3g --executor-cores 2 \
+  spark_scalability_benchmark.py \
+  s3://$BUCKET/ecommerce/2019-Nov.csv \
+  s3://$BUCKET/ecommerce-results/spark-scalability
+```
+
+This draws the first 100,000 / 500,000 / 1,000,000 / 5,000,000 rows from the same file
+with `.limit()`, materializes each sample into cache before timing starts so the read
+itself isn't counted, times all three analyses at each size, and writes one summary CSV
+to the output path. Takes a few minutes total — most of it is the same one-time
+Spark/YARN startup cost from Step 4, paid once at the start of this run rather than once
+per sample size.
+
+---
+
 ## Step 5 — Pull results back down and verify
 
 Still on the primary node:
@@ -202,7 +237,8 @@ aws s3 ls s3://$BUCKET/ecommerce-results/ --recursive
 ```
 
 You should see three folders (`event_distribution`, `daily_purchase_revenue`,
-`top10_brands`), each with one `.csv` part file and a `_SUCCESS` marker.
+`top10_brands`), each with one `.csv` part file and a `_SUCCESS` marker — plus a fourth
+`spark-scalability/` folder if you ran Step 4b.
 
 Back on your **Windows machine** (local PowerShell, not the cluster):
 

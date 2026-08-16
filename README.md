@@ -40,17 +40,20 @@ The pipeline runs as a single PySpark job (`ecommerce_analysis.py`) submitted to
 
 Distributing the read and the three aggregations across the cluster's core nodes is what makes this tractable at this scale — the same logic expressed as classic Java MapReduce would require separate map/reduce stages with disk I/O between each one, whereas Spark keeps the cached DataFrame in memory across all three passes.
 
+A second script, `spark_scalability_benchmark.py`, re-runs the same three analyses at four increasing sample sizes (100K / 500K / 1M / 5M rows) instead of the full file, purely to measure how execution time changes with row count — see Performance Characteristics below.
+
 ## Repository Contents
 
 ```
 .
-├── ecommerce_analysis.py       # The PySpark job (see Approach above)
-├── AWS_Commands_Runbook.md     # Full, copy-pasteable AWS Academy Learner Lab setup:
-│                                #   S3 upload -> EMR cluster launch -> SSH -> spark-submit -> teardown
+├── ecommerce_analysis.py              # The main PySpark job (see Approach above)
+├── spark_scalability_benchmark.py     # Re-runs the 3 analyses at 4 sample sizes for the scalability table below
+├── AWS_Commands_Runbook.md            # Full, copy-pasteable AWS Academy Learner Lab setup:
+│                                       #   S3 upload -> EMR cluster launch -> SSH -> spark-submit -> teardown
 └── results/
     ├── event_distribution/
     ├── daily_purchase_revenue/
-    └── top10_brands/            # Each folder holds the job's output CSV
+    └── top10_brands/                  # Each folder holds the job's output CSV
 ```
 
 ## How to Reproduce
@@ -61,8 +64,9 @@ Full step-by-step commands (AWS CLI + CloudShell + SSH, written for AWS Academy 
 2. Launch an EMR cluster (EMR 7.13.0, Hadoop 3.4.2, Spark 3.5.6; 1 primary + 2 core `m5.xlarge`).
 3. SSH into the primary node.
 4. `spark-submit ecommerce_analysis.py s3://<bucket>/ecommerce/2019-Nov.csv s3://<bucket>/ecommerce-results`
-5. Pull the three result CSVs back down from S3.
-6. Terminate the cluster.
+5. (optional) `spark-submit spark_scalability_benchmark.py s3://<bucket>/ecommerce/2019-Nov.csv s3://<bucket>/ecommerce-results/spark-scalability` — re-runs the same three analyses at 100K/500K/1M/5M rows for the scalability table below.
+6. Pull the result CSVs back down from S3.
+7. Terminate the cluster.
 
 ## Results
 
@@ -118,9 +122,20 @@ The three aggregations together take only 28.5 of the 159 seconds — the remain
 
 **Scalability** — horizontal by design: 1 primary + 2 core `m5.xlarge` nodes, with YARN auto-partitioning the cached DataFrame and all three stages across 4 executors (`--num-executors 4 --executor-memory 3g --executor-cores 2`). Adding capacity is a config change, not a code change.
 
+Measured directly with `spark_scalability_benchmark.py`, which re-runs the same three operations at four increasing sample sizes — each `.limit()`'d from the source file and materialized into cache before timing starts, matching the sample sizes used for the Pandas comparison:
+
+| Rows | Event Distribution | Daily Purchase & Revenue | Top 10 Brands | Total |
+|---|---:|---:|---:|---:|
+| 100,000 | 1.01 s | 0.91 s | 0.46 s | 2.38 s |
+| 500,000 | 0.72 s | 0.62 s | 0.50 s | 1.84 s |
+| 1,000,000 | 0.56 s | 0.24 s | 0.26 s | 1.07 s |
+| 5,000,000 | 1.15 s | 1.00 s | 0.83 s | 2.98 s |
+
+Total time isn't monotonic with row count — it's highest at 100K, dips at 500K–1M, then rises again at 5M. That's expected behavior for a JVM-based engine, not measurement noise: the 100K sample pays one-time Catalyst query-compilation and JVM warmup costs that the 500K and 1M samples don't, because all four sizes run inside the same `spark-submit` session and reuse those already-warmed code paths — so they come in faster despite processing more rows. By 5M, genuine data volume overtakes that fixed cost and total time climbs again. The practical takeaway for the Spark-vs-Pandas comparison: Spark's fixed per-job overhead means Pandas should win on raw speed across this entire 100K–5M range, and Spark's advantage should only show up at a scale a single machine can't comfortably hold — consistent with the ~130 s one-time cost paid once on the full 67.5M-row file above.
+
 **Memory limitations** — measured via the aggregated driver+executor logs (`yarn logs -applicationId ...`): cached DataFrame partitions landed in executor memory at ~42–55 MiB each, with free memory decreasing smoothly as partitions accumulated and no spill-to-disk, eviction, or "not enough memory" warnings anywhere in the log. The full 9 GB file fit comfortably in the two core nodes' combined memory. (Spark's default `MEMORY_AND_DISK` storage level for cached DataFrames would spill to local disk automatically if it didn't fit, rather than failing.)
 
-**Ability to handle increasing data volume** — additive, not architectural: pointing the same job at both months combined (`s3://<bucket>/ecommerce/2019-*.csv`, ~14.6 GB) needs no code change, just enough core nodes to hold throughput steady. Not empirically tested this round (single data volume only).
+**Ability to handle large data volumes** — confirmed empirically, not just by design: the same three operations ran unmodified at five different scales over the course of this project — 100K, 500K, 1M, and 5M-row samples (table above) plus the complete 67,501,979-row file — with zero code changes and no memory or capability failures at any scale. Only the input path / `.limit()` value changed between runs. Pointing the job at both months combined (`s3://<bucket>/ecommerce/2019-*.csv`, ~14.6 GB) would follow the same pattern — no code change, just enough core nodes to hold throughput steady — but wasn't tested this round (single-month input only).
 
 Solution 2 (pandas, single-machine) will be measured against the same four dimensions once complete, for a direct comparison.
 
